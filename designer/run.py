@@ -40,7 +40,7 @@ class WheelOptimizer:
             l1+=0 # diff[pixel] * 10
             l2+=self.wheel.diff[pixel]**2 * np.sign(self.wheel.diff[pixel])
             score += self.wheel.weights[pixel] * (l1 + l2)
-        self.line_scores[index] = float(score)/len(pixels)
+        self.line_scores[index] = float(score), len(pixels)
 
     #refresh_line_score runs update_line_scores on all lines effectively wiping the cache
     def refresh_line_scores(self):
@@ -72,20 +72,23 @@ class WheelOptimizer:
             # Get the score of the proposed_line
             a,b = prev[-1],i
             if a>b: a,b=b,a
-            score = self.line_scores[a,b]
+            score, length = self.line_scores[a,b]
 
-            if lookahead>0: #TODO fix how this is done to normalize by length after adding together
-                score += self.get_next_point([prev[-1],i], lookahead=lookahead-1)[1]
+            if lookahead>0:
+                _, _, next_score, next_length = self.get_next_point([prev[-1],i], lookahead=lookahead-1)
+                score += next_score
+                length += next_length
 
             if ((using_random_point and i==random_choice) or
                 best_score is None or
-                score>best_score):
+                float(score)/length > float(best_score)/best_length):
                 best_i=i
                 best_score = score
+                best_length = length
 
             if using_random_point and i==random_choice:
                 break
-        return best_i, best_score
+        return best_i, float(best_score)/best_length, best_score, best_length
 
 class Wheel:
     def __init__(self):
@@ -153,7 +156,7 @@ class Wheel:
             start_time = time.time() # Start timer
 
             # Get next Point
-            next_point, err = self.wheelOptimizer.get_next_point(self.points_log[-1:],
+            next_point, err, _, _ = self.wheelOptimizer.get_next_point(self.points_log[-1:],
                                                                  lookahead=self.LOOKAHEAD)
             self.points_log.append(next_point)
             errors.append(err)
