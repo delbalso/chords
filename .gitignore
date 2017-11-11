@@ -1,1 +1,5 @@
 designer/results/
+*.pyc
+.ipynb_checkpoints
+*.p
+*.jpg

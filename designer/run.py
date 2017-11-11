@@ -29,17 +29,11 @@ class WheelOptimizer:
         if a>b: a,b=b,a
         index = a,b
         pixels = self.wheel.ref_lines[index]
-        score = 0
-        l1=0
-        l2=0
-
-        #self.line_scores[index] = 0.5
+        #self.line_scores[index] = 0.5, 5
         #return
-        # calculate score
-        for pixel in pixels:
-            l1+=0 # diff[pixel] * 10
-            l2+=self.wheel.diff[pixel]**2 * np.sign(self.wheel.diff[pixel])
-            score += self.wheel.weights[pixel] * (l1 + l2)
+        xs = [x for x,y in pixels]
+        ys = [y for x,y in pixels]
+        score = np.sum(self.wheel.weights[xs,ys] * (self.wheel.LAMBDA * self.wheel.weighted_l2_diff[xs,ys] + (1-self.wheel.LAMBDA)*self.wheel.weighted_l2_diff[xs,ys]))
         self.line_scores[index] = float(score), len(pixels)
 
     #refresh_line_score runs update_line_scores on all lines effectively wiping the cache
@@ -100,8 +94,9 @@ class Wheel:
         self.LINE_OPACITY = .03
         self.PADDING = 10
         self.RANDOM_INTERVAL = None
-        self.CACHE_REFRESH = 20
+        self.CACHE_REFRESH = 10
         self.PLOT_INTERVAL = 50
+        self.LAMBDA = 0
 
         self.original_img = get_image('/Users/delbalso/Downloads/dave.jpg')
         self.original_weights = get_image('/Users/delbalso/Downloads/dave-mask.jpg')
@@ -117,13 +112,18 @@ class Wheel:
         # Set up main images
         self.img = normalize_image((self.original_img - self.original_img.min())/self.original_img.max()*255, self.EDGE_SIZE)
         self.weights = normalize_image(self.original_weights, self.EDGE_SIZE)
-        self.p = plot.Plot(self, self.img, self.weights, self.points)
+
+        self.p = plot.Plot(self)
 
         # Set up derivative images
         # Raster is the image we're drawing to simulate thread
         self.raster = np.zeros((self.EDGE_SIZE, self.EDGE_SIZE))+255
         assert self.raster.shape == self.img.shape
-        self.diff = np.subtract(self.raster, self.img)
+        self.l1_errors = []
+        self.l2_errors = []
+        self.loss_delta = []
+        self.update_diff()
+
 
         # start with a random point
         self.points_log = [randint(0, self.NUM_POINTS-1)]
@@ -142,12 +142,11 @@ class Wheel:
 
     # calculate runs the logic to figure out the right weaving
     def calculate(self):
-        errors = []
         times = []
         lengths = []
         i = 0
-        while (len(errors)<self.STOPPING_LOOKBACK or
-               sum(errors[-self.STOPPING_LOOKBACK:]) > self.STOPPING_LOOKBACK*0.125): # TODO cleanup this
+        while (len(self.loss_delta)<self.STOPPING_LOOKBACK or
+               sum(self.loss_delta[-self.STOPPING_LOOKBACK:]) > self.STOPPING_LOOKBACK*0.125): # TODO cleanup this
 
             if i%5 == 0: print "Starting step {0}".format(i)
             if i%self.CACHE_REFRESH == 0:
@@ -156,10 +155,12 @@ class Wheel:
             start_time = time.time() # Start timer
 
             # Get next Point
-            next_point, err, _, _ = self.wheelOptimizer.get_next_point(self.points_log[-1:],
+            next_point, loss_delta, _, _ = self.wheelOptimizer.get_next_point(self.points_log[-1:],
                                                                  lookahead=self.LOOKAHEAD)
             self.points_log.append(next_point)
-            errors.append(err)
+            self.loss_delta.append(np.log(loss_delta))
+            self.l1_errors.append(np.log(np.sum(self.weighted_l1_diff)))
+            self.l2_errors.append(np.log(np.sum(np.fabs(self.weighted_l1_diff))))
 
             # Get Pixels of new line
             new_line_pixels = self.get_line_pixels(self.points_log[-2],self.points_log[-1])
@@ -167,22 +168,28 @@ class Wheel:
 
             # Draw the line
             self.draw_line(new_line_pixels)
-            self.update_diff(new_line_pixels)
+            self.update_diff()
             self.wheelOptimizer.update_line_scores((self.points_log[-2],self.points_log[-1]))
 
             times.append(time.time() - start_time) # End timer
 
             if i%self.PLOT_INTERVAL==1:
-                self.p.show(self.weights,self.raster,self.diff,self.points_log, errors, self.points_log, lengths)
+                plot_time = time.time()
+                self.p.show(lengths)
+                print("Plotting took: {}".format(time.time()-plot_time))
+                plot_time = time.time()
                 self.save_snapshot(i)
+                print("saving took: {}".format(time.time()-plot_time))
+
                 print(stats.describe(np.array(times)))
 
             i = i+1
         print "Finished! We drew {0} lines".format(i)
 
-    def update_diff(self, pixels): # optimization?
-        for pixel in pixels:
-            self.diff[pixel] = self.raster[pixel] - self.img[pixel]
+    def update_diff(self): # optimization?
+        self.diff = np.subtract(self.raster, self.img)
+        self.weighted_l1_diff = np.multiply(self.weights/128,self.diff)
+        self.weighted_l2_diff = np.multiply(np.square(self.weighted_l1_diff),np.sign(self.diff))
 
     def save_snapshot(self, steps):
         save_dir = os.path.join("results",self.process_start_time, str(steps))
@@ -191,11 +198,11 @@ class Wheel:
         except:
             pass
 
-        pickle.dump({"point_log": self.points_log,
-                     "image": self.original_img,
-                     "weights": self.original_weights,
-                     "figure": self.p},
-                    open(os.path.join(save_dir,"{0}.p".format(steps)), "wb" ))
+        #pickle.dump({"point_log": self.points_log,
+        #             "image": self.original_img,
+        #             "weights": self.original_weights,
+        #             "figure": self.p},
+        #            open(os.path.join(save_dir,"{0}.p".format(steps)), "wb" ))
         self.p.fig.savefig(os.path.join(save_dir,"{0}.png".format(steps)))
 
     # Darken a set (line) of pixels on the raster image
